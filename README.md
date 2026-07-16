@@ -1,3 +1,5 @@
+WIP: Correctness not yet verified.
+
 # jax-bGEV
 
 Minimal JAX implementation of sampling and log-probability operations for the GEV and blended GEV distributions described by Castro-Camilo, Huser, and Rue (https://arxiv.org/abs/2106.13110).
