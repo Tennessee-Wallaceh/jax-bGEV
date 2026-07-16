@@ -53,29 +53,45 @@ def bgev_log_prob(x: Any, *, q: Any, s: Any, xi: Any, alpha: Any = 0.5, beta: An
     x = jnp.asarray(x)
     tiny = jnp.finfo(x.dtype).tiny
     a, b, qg, sg = _components(q=q, s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb)
-    weight, dweight = _beta_weight(x, a=a, b=b, c1=c1, c2=c2)
-    f_cdf = jnp.clip(gev_cdf(x, q=q, s=s, xi=xi, alpha=alpha, beta=beta), min=tiny)
-    g_cdf = jnp.clip(gev_cdf(x, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta), min=tiny)
+
+    x_middle = jnp.clip(x, a, b)
+    weight, dweight = _beta_weight(x_middle, a=a, b=b, c1=c1, c2=c2)
+    f_cdf = jnp.clip(gev_cdf(x_middle, q=q, s=s, xi=xi, alpha=alpha, beta=beta), min=tiny)
+    g_cdf = jnp.clip(gev_cdf(x_middle, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta), min=tiny)
     log_f = jnp.log(f_cdf)
     log_g = jnp.log(g_cdf)
-    h_cdf = jnp.exp(weight * log_f + (1 - weight) * log_g)
-    f_ratio = jnp.exp(gev_log_prob(x, q=q, s=s, xi=xi, alpha=alpha, beta=beta) - log_f)
-    g_ratio = jnp.exp(gev_log_prob(x, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta) - log_g)
+    log_h_middle = weight * log_f + (1 - weight) * log_g
+    f_ratio = jnp.exp(gev_log_prob(x_middle, q=q, s=s, xi=xi, alpha=alpha, beta=beta) - log_f)
+    g_ratio = jnp.exp(gev_log_prob(x_middle, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta) - log_g)
     hazard = dweight * (log_f - log_g) + weight * f_ratio + (1 - weight) * g_ratio
-    return finite_or_neginf(jnp.log(h_cdf) + jnp.log(hazard), hazard > 0)
+    logp_middle = finite_or_neginf(log_h_middle + jnp.log(hazard), hazard > 0)
+
+    logp_gumbel = gev_log_prob(x, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta)
+    logp_frechet = gev_log_prob(x, q=q, s=s, xi=xi, alpha=alpha, beta=beta)
+    return jnp.where(x <= a, logp_gumbel, jnp.where(x >= b, logp_frechet, logp_middle))
 
 
-def bgev_sample(key: Array, *, q: Any, s: Any, xi: Any, shape: tuple[int, ...] = (), alpha: Any = 0.5, beta: Any = 0.5, pa: Any = 0.05, pb: Any = 0.2, c1: Any = 5.0, c2: Any = 5.0, steps: int = 80) -> Array:
+def bgev_quantile(p: Any, *, q: Any, s: Any, xi: Any, alpha: Any = 0.5, beta: Any = 0.5, pa: Any = 0.05, pb: Any = 0.2, c1: Any = 5.0, c2: Any = 5.0, steps: int = 32) -> Array:
     validate_bgev(s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb, c1=c1, c2=c2)
-    u = jax.random.uniform(key, shape=shape, minval=jnp.finfo(jnp.float32).tiny, maxval=1.0)
-    lo = gev_quantile(jnp.minimum(u, 1e-6), q=q, s=s, xi=0.0, alpha=alpha, beta=beta) - jnp.asarray(s) * 10
-    hi = gev_quantile(jnp.maximum(u, 1 - 1e-6), q=q, s=s, xi=xi, alpha=alpha, beta=beta) + jnp.asarray(s) * 10
+    p = jnp.asarray(p)
+    a, b, qg, sg = _components(q=q, s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb)
+
+    x_gumbel = gev_quantile(p, q=qg, s=sg, xi=0.0, alpha=alpha, beta=beta)
+    x_frechet = gev_quantile(p, q=q, s=s, xi=xi, alpha=alpha, beta=beta)
+    lower = a + jnp.zeros_like(p)
+    upper = b + jnp.zeros_like(p)
 
     def body(_, bounds):
         lower, upper = bounds
-        mid = (lower + upper) / 2
-        go_right = bgev_cdf(mid, q=q, s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb, c1=c1, c2=c2) < u
-        return jnp.where(go_right, mid, lower), jnp.where(go_right, upper, mid)
+        middle = (lower + upper) / 2
+        go_right = bgev_cdf(middle, q=q, s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb, c1=c1, c2=c2) < p
+        return jnp.where(go_right, middle, lower), jnp.where(go_right, upper, middle)
 
-    lo, hi = jax.lax.fori_loop(0, steps, body, (lo, hi))
-    return (lo + hi) / 2
+    lower, upper = jax.lax.fori_loop(0, steps, body, (lower, upper))
+    x_mixing = (lower + upper) / 2
+    return jnp.where(p <= pa, x_gumbel, jnp.where(p >= pb, x_frechet, x_mixing))
+
+
+def bgev_sample(key: Array, *, q: Any, s: Any, xi: Any, shape: tuple[int, ...] = (), alpha: Any = 0.5, beta: Any = 0.5, pa: Any = 0.05, pb: Any = 0.2, c1: Any = 5.0, c2: Any = 5.0, steps: int = 32) -> Array:
+    u = jax.random.uniform(key, shape=shape, minval=jnp.finfo(jnp.float32).tiny, maxval=1.0)
+    return bgev_quantile(u, q=q, s=s, xi=xi, alpha=alpha, beta=beta, pa=pa, pb=pb, c1=c1, c2=c2, steps=steps)
