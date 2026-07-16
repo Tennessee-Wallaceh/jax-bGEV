@@ -38,9 +38,31 @@ def test_bgev_log_prob_is_finite_in_representable_float32_left_tail():
     assert jnp.all(jnp.isfinite(logp))
 
 
-def test_gev_gumbel_branch_has_finite_x_gradient():
-    grad = jax.grad(lambda x: gev_log_prob(x, q=0.0, s=1.0, xi=0.0))(0.0)
-    assert jnp.isfinite(grad)
+def test_gev_gumbel_branch_has_finite_x_gradients():
+    for x in [-10.0, -1.0, 0.0, 1.0]:
+        grad = jax.grad(lambda value: gev_log_prob(value, q=0.0, s=1.0, xi=0.0))(x)
+        assert jnp.isfinite(grad)
+
+
+def test_bgev_log_prob_has_finite_x_gradients_across_regions_and_parameters():
+    settings = [
+        (-1.0, 0.5, 0.1),
+        (0.0, 1.0, 0.2),
+        (1.0, 2.0, 0.5),
+    ]
+    for q, s, xi in settings:
+        for x in [q - 10 * s, q, q + 10 * s]:
+            grad = jax.grad(lambda value: bgev_log_prob(value, q=q, s=s, xi=xi))(x)
+            assert jnp.isfinite(grad)
+
+
+def test_bgev_log_prob_has_finite_parameter_gradients_for_different_settings():
+    for q, log_s, xi in [(-1.0, -0.5, 0.1), (0.0, 0.0, 0.2), (1.0, 0.5, 0.5)]:
+        def objective(q_value, log_s_value, xi_value):
+            return bgev_log_prob(q, q=q_value, s=jnp.exp(log_s_value), xi=xi_value)
+
+        grads = jax.grad(objective, argnums=(0, 1, 2))(q, log_s, xi)
+        assert all(jnp.isfinite(grad) for grad in grads)
 
 
 def test_bgev_cdf_is_monotone_and_quantile_inverts():

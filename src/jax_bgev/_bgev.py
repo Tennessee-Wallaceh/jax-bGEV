@@ -14,10 +14,12 @@ Array = jax.Array
 
 def _beta_weight(x: Array, *, a: Array, b: Array, c1: Any, c2: Any) -> tuple[Array, Array]:
     u = jnp.clip((x - a) / (b - a), 0.0, 1.0)
-    p = betainc(c1, c2, u)
-    log_pdf_u = (c1 - 1) * jnp.log(u) + (c2 - 1) * jnp.log1p(-u) - betaln(c1, c2)
-    dp = jnp.where((u > 0) & (u < 1), jnp.exp(log_pdf_u) / (b - a), 0.0)
-    return p, dp
+    weight = betainc(c1, c2, u)
+    interior = (u > 0.0) & (u < 1.0)
+    safe_u = jnp.where(interior, u, 0.5)
+    log_pdf_u = (c1 - 1) * jnp.log(safe_u) + (c2 - 1) * jnp.log1p(-safe_u) - betaln(c1, c2)
+    dweight = jnp.where(interior, jnp.exp(log_pdf_u) / (b - a), 0.0)
+    return weight, dweight
 
 
 def _gumbel_params(*, a: Array, b: Array, alpha: Any, beta: Any, pa: Any, pb: Any) -> tuple[Array, Array]:
